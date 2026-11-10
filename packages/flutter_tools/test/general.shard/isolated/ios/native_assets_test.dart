@@ -7,15 +7,14 @@ import 'package:file/file.dart';
 import 'package:file/memory.dart';
 import 'package:file_testing/file_testing.dart';
 import 'package:flutter_tools/src/artifacts.dart';
+import 'package:flutter_tools/src/base/config.dart';
 import 'package:flutter_tools/src/base/file_system.dart';
-import 'package:flutter_tools/src/base/io.dart';
 import 'package:flutter_tools/src/base/logger.dart';
 import 'package:flutter_tools/src/base/platform.dart';
 import 'package:flutter_tools/src/build_info.dart';
 import 'package:flutter_tools/src/build_system/build_system.dart';
 import 'package:flutter_tools/src/build_system/targets/native_assets.dart';
 import 'package:flutter_tools/src/features.dart';
-import 'package:flutter_tools/src/globals.dart' as globals;
 import 'package:flutter_tools/src/isolated/native_assets/dart_hook_result.dart';
 import 'package:flutter_tools/src/isolated/native_assets/ios/native_assets.dart';
 import 'package:flutter_tools/src/isolated/native_assets/native_assets.dart';
@@ -51,13 +50,30 @@ void main() {
     projectUri = environment.projectDir.uri;
   });
 
-  for (final buildMode in <BuildMode>[BuildMode.debug, BuildMode.release]) {
+  for (final (
+        BuildMode buildMode,
+        String? deploymentTarget,
+        AppleVersion expectedVersion,
+        String expectedMinimum,
+      )
+      in <(BuildMode, String?, AppleVersion, String)>[
+        for (final buildMode in <BuildMode>[BuildMode.debug, BuildMode.release]) ...[
+          (buildMode, null, AppleVersion(15), '15.0'),
+          (buildMode, '16.4', AppleVersion(16, minor: 4), '16.4'),
+          (buildMode, '17.2.1', AppleVersion(17, minor: 2, patch: 1), '17.2.1'),
+        ],
+      ]) {
     testUsingContext(
-      'build with assets $buildMode',
+      'build with assets $buildMode deployment target $deploymentTarget',
       overrides: <Type, Generator>{
         FeatureFlags: () =>
             TestFeatureFlags(isNativeAssetsEnabled: true, isDartDataAssetsEnabled: true),
-        ProcessManager: () => FakeProcessManager.list(<FakeCommand>[
+      },
+      () async {
+        if (const LocalPlatform().isWindows) {
+          return; // Backslashes in commands, but we will never run these commands on Windows.
+        }
+        processManager = FakeProcessManager.list(<FakeCommand>[
           const FakeCommand(
             command: <Pattern>[
               'xcrun',
@@ -210,12 +226,7 @@ void main() {
               '/build/native_assets/ios/buz.framework',
             ],
           ),
-        ]),
-      },
-      () async {
-        if (const LocalPlatform().isWindows) {
-          return; // Backslashes in commands, but we will never run these commands on Windows.
-        }
+        ]);
         final File packageConfig = environment.projectDir.childFile(
           '.dart_tool/package_config.json',
         );
@@ -241,27 +252,35 @@ void main() {
         ];
         final buildRunner = FakeFlutterNativeAssetsBuildRunner(
           packagesWithNativeAssetsResult: <String>['bar'],
-          onBuild: (BuildInput input) => FakeFlutterNativeAssetsBuilderResult.fromAssets(
-            codeAssets: buildMode == BuildMode.debug
-                ? codeAssets(input.config.code.targetOS, input.config.code)
-                : <CodeAsset>[],
-          ),
-          onLink: (LinkInput input) => buildMode == BuildMode.debug
-              ? null
-              : FakeFlutterNativeAssetsBuilderResult.fromAssets(
-                  codeAssets: codeAssets(input.config.code.targetOS, input.config.code),
-                ),
+          onBuild: (BuildInput input) {
+            expect(input.config.code.iOS.deploymentVersion, expectedVersion);
+            return FakeFlutterNativeAssetsBuilderResult.fromAssets(
+              codeAssets: buildMode == BuildMode.debug
+                  ? codeAssets(input.config.code.targetOS, input.config.code)
+                  : <CodeAsset>[],
+            );
+          },
+          onLink: (LinkInput input) {
+            expect(input.config.code.iOS.deploymentVersion, expectedVersion);
+            return buildMode == BuildMode.debug
+                ? null
+                : FakeFlutterNativeAssetsBuilderResult.fromAssets(
+                    codeAssets: codeAssets(input.config.code.targetOS, input.config.code),
+                  );
+          },
         );
         final environmentDefines = <String, String>{
           kBuildMode: buildMode.cliName,
           kSdkRoot: '.../iPhone Simulator',
           kIosArchs: 'arm64 x86_64',
+          kIosDeploymentTarget: ?deploymentTarget,
         };
         final DartHooksResult dartHookResult = await runFlutterSpecificHooks(
           environmentDefines: environmentDefines,
           targetPlatform: TargetPlatform.ios,
           projectUri: projectUri,
           fileSystem: fileSystem,
+          logger: logger,
           buildRunner: buildRunner,
           buildCodeAssets: const BuildCodeAssetsOptions(appBuildDirectory: null),
           buildDataAssets: true,
@@ -273,11 +292,15 @@ void main() {
           targetPlatform: TargetPlatform.ios,
           projectUri: projectUri,
           fileSystem: fileSystem,
+          logger: logger,
+          processManager: processManager,
           nativeAssetsFileUri: nonFlutterTesterAssetUri,
-          targetUri: projectUri.resolve('${getBuildDirectory()}/native_assets/ios/'),
+          targetUri: projectUri.resolve(
+            '${getBuildDirectory(Config.test(), fileSystem)}/native_assets/ios/',
+          ),
         );
         expect(
-          (globals.logger as BufferLogger).traceText,
+          logger.traceText,
           stringContainsInOrder(<String>[
             'Running build hooks for ios_arm64, ios_x64.',
             'Running build hooks for ios_arm64, ios_x64 done.',
@@ -288,6 +311,14 @@ void main() {
           ]),
         );
         expect(environment.buildDir.childFile(InstallCodeAssets.nativeAssetsFilename), exists);
+        for (final name in <String>['bar', 'buz']) {
+          expect(
+            fileSystem
+                .file('/build/native_assets/ios/$name.framework/Info.plist')
+                .readAsStringSync(),
+            contains('<key>MinimumOSVersion</key>\n\t<string>$expectedMinimum</string>'),
+          );
+        }
         // Two archs.
         expect(buildRunner.buildInvocations, 2);
         expect(buildRunner.linkInvocations, buildMode == BuildMode.release ? 2 : 0);
@@ -321,17 +352,14 @@ void main() {
         ),
       ];
 
-      fatAssetTargetLocationsIOS(assets);
+      fatAssetTargetLocationsIOS(assets, logger: logger);
 
-      final fakeStdio = globals.stdio as FakeStdio;
       expect(
-        fakeStdio.writtenToStderr,
+        logger.errorText,
         contains(
-          contains(
-            'Code asset "package:bar/bar.dart" has different framework names for '
-            'different architectures. Picking "bar.framework" and '
-            'ignoring "bar_different.framework".',
-          ),
+          'Code asset "package:bar/bar.dart" has different framework names for '
+          'different architectures. Picking "bar.framework" and '
+          'ignoring "bar_different.framework".',
         ),
       );
     },
@@ -339,7 +367,6 @@ void main() {
       FileSystem: () => fileSystem,
       ProcessManager: () => FakeProcessManager.any(),
       Logger: () => logger,
-      Stdio: () => FakeStdio(),
     },
   );
 }
