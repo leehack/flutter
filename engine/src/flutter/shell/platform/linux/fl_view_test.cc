@@ -121,6 +121,8 @@ TEST_F(FlViewTest, SemanticsUpdate) {
   g_signal_emit_by_name(engine, "update-semantics", &update);
 
   FlViewAccessible* accessible = fl_view_get_accessible(view);
+  EXPECT_EQ(ATK_OBJECT(accessible),
+            gtk_widget_get_accessible(GTK_WIDGET(view)));
   EXPECT_EQ(atk_object_get_n_accessible_children(ATK_OBJECT(accessible)), 1);
   AtkObject* root_object =
       atk_object_ref_accessible_child(ATK_OBJECT(accessible), 0);

@@ -165,7 +165,6 @@ source_set("flutter_linux_sources") {
     "fl_settings_channel.cc",
     "fl_settings_handler.cc",
     "fl_settings_portal.cc",
-    "fl_socket_accessible.cc",
     "fl_standard_message_codec.cc",
     "fl_standard_method_codec.cc",
     "fl_string_codec.cc",
@@ -380,6 +379,22 @@ if (!enable_lto) {
       "//flutter/testing",
     ]
   }
+}
+
+# Uses real GTK and an active AT-SPI bridge, without LinuxTest or GTK mocks.
+executable("flutter_linux_accessibility_unittests") {
+  testonly = true
+  sources = [ "fl_view_accessibility_integration_test.cc" ]
+  public_configs = [ "//flutter:config" ]
+  configs += [ "//flutter/shell/platform/linux/config:gtk" ]
+  defines = [
+    "FLUTTER_ENGINE_NO_PROTOTYPES",
+    "FLUTTER_LINUX_COMPILATION",
+  ]
+  deps = [
+    ":flutter_linux",
+    "//flutter/testing",
+  ]
 }
 
 shared_library("flutter_linux_gtk") {

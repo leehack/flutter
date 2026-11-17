@@ -10,11 +10,29 @@
 #include "flutter/shell/platform/linux/public/flutter_linux/fl_engine.h"
 #include "flutter/shell/platform/linux/testing/mock_signal_handler.h"
 
-class FlViewAccessibleTest : public flutter::testing::LinuxTest {};
+class FlViewAccessibleTest : public flutter::testing::LinuxTest {
+ protected:
+  void SetUp() override {
+    widget =
+        GTK_WIDGET(g_object_ref_sink(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)));
+    accessible = FL_VIEW_ACCESSIBLE(
+        g_object_new(fl_view_accessible_get_type(), nullptr));
+    atk_object_initialize(ATK_OBJECT(accessible), widget);
+    fl_view_accessible_set_engine(accessible, engine, 456);
+  }
+
+  void TearDown() override {
+    gtk_accessible_set_widget(GTK_ACCESSIBLE(accessible), nullptr);
+    g_clear_object(&accessible);
+    g_clear_object(&widget);
+    LinuxTest::TearDown();
+  }
+
+  GtkWidget* widget = nullptr;
+  FlViewAccessible* accessible = nullptr;
+};
 
 TEST_F(FlViewAccessibleTest, BuildTree) {
-  g_autoptr(FlViewAccessible) accessible = fl_view_accessible_new(engine, 456);
-
   int32_t children[] = {111, 222};
   FlutterSemanticsFlags flags = {};
   FlutterSemanticsNode2 root_node = {.id = 0,
@@ -51,8 +69,6 @@ TEST_F(FlViewAccessibleTest, BuildTree) {
 }
 
 TEST_F(FlViewAccessibleTest, AddRemoveChildren) {
-  g_autoptr(FlViewAccessible) accessible = fl_view_accessible_new(engine, 456);
-
   FlutterSemanticsFlags flags = {};
   FlutterSemanticsNode2 root_node = {
       .id = 0, .label = "root", .child_count = 0, .flags2 = &flags};
@@ -159,4 +175,36 @@ TEST_F(FlViewAccessibleTest, AddRemoveChildren) {
   }
 
   EXPECT_EQ(atk_object_get_n_accessible_children(root_object), 0);
+}
+
+TEST_F(FlViewAccessibleTest, EmptyStateBeforeEngineAttachment) {
+  g_autoptr(FlViewAccessible) empty =
+      FL_VIEW_ACCESSIBLE(g_object_new(fl_view_accessible_get_type(), nullptr));
+  atk_object_initialize(ATK_OBJECT(empty), widget);
+  EXPECT_EQ(atk_object_get_n_accessible_children(ATK_OBJECT(empty)), 0);
+  EXPECT_EQ(atk_object_ref_accessible_child(ATK_OBJECT(empty), 0), nullptr);
+  g_autoptr(AtkStateSet) states = atk_object_ref_state_set(ATK_OBJECT(empty));
+  EXPECT_NE(states, nullptr);
+  gtk_accessible_set_widget(GTK_ACCESSIBLE(empty), nullptr);
+  g_object_run_dispose(G_OBJECT(empty));
+  g_object_run_dispose(G_OBJECT(empty));
+}
+
+TEST_F(FlViewAccessibleTest, RootStateRemainsAuthoritative) {
+  FlutterSemanticsFlags flags = {};
+  flags.is_enabled = kFlutterTristateFalse;
+  flags.is_hidden = true;
+  FlutterSemanticsNode2 root = {};
+  root.id = 0;
+  root.flags2 = &flags;
+  FlutterSemanticsNode2* nodes[] = {&root};
+  FlutterSemanticsUpdate2 update = {};
+  update.node_count = 1;
+  update.nodes = nodes;
+  fl_view_accessible_handle_update_semantics(accessible, &update);
+  g_autoptr(AtkStateSet) states =
+      atk_object_ref_state_set(ATK_OBJECT(accessible));
+  EXPECT_FALSE(atk_state_set_contains_state(states, ATK_STATE_ENABLED));
+  EXPECT_FALSE(atk_state_set_contains_state(states, ATK_STATE_VISIBLE));
+  EXPECT_TRUE(atk_state_set_contains_state(states, ATK_STATE_SENSITIVE));
 }

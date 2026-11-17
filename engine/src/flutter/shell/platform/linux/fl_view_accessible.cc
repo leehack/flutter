@@ -12,12 +12,11 @@ extern "C" {
 #include "flutter/shell/platform/linux/fl_accessible_text_field.h"
 #include "flutter/shell/platform/linux/fl_view_accessible.h"
 #include "flutter/shell/platform/linux/public/flutter_linux/fl_value.h"
-#include "flutter/shell/platform/linux/public/flutter_linux/fl_view.h"
 
 static constexpr int32_t kRootSemanticsNodeId = 0;
 
 struct _FlViewAccessible {
-  AtkPlug parent_instance;
+  GtkContainerAccessible parent_instance;
 
   GWeakRef engine;
 
@@ -30,7 +29,9 @@ struct _FlViewAccessible {
   gboolean root_node_created;
 };
 
-G_DEFINE_TYPE(FlViewAccessible, fl_view_accessible, ATK_TYPE_PLUG)
+G_DEFINE_TYPE(FlViewAccessible,
+              fl_view_accessible,
+              GTK_TYPE_CONTAINER_ACCESSIBLE)
 
 // Enum copied from ATK 2.50, as the version we are building against doesn't
 // have this.
@@ -55,6 +56,9 @@ static FlAccessibleNode* create_node(FlViewAccessible* self,
 }
 
 static FlAccessibleNode* lookup_node(FlViewAccessible* self, int32_t id) {
+  if (self->semantics_nodes_by_id == nullptr) {
+    return nullptr;
+  }
   return FL_ACCESSIBLE_NODE(
       g_hash_table_lookup(self->semantics_nodes_by_id, GINT_TO_POINTER(id)));
 }
@@ -69,6 +73,9 @@ static FlAccessibleNode* get_node(FlViewAccessible* self,
   }
 
   node = create_node(self, semantics);
+  if (node == nullptr) {
+    return nullptr;
+  }
   if (semantics->id == kRootSemanticsNodeId) {
     fl_accessible_node_set_parent(node, ATK_OBJECT(self), 0);
   }
@@ -118,7 +125,14 @@ static AtkRole fl_view_accessible_get_role(AtkObject* accessible) {
 static AtkStateSet* fl_view_accessible_ref_state_set(AtkObject* accessible) {
   FlViewAccessible* self = FL_VIEW_ACCESSIBLE(accessible);
   FlAccessibleNode* node = lookup_node(self, 0);
-  return node != nullptr ? atk_object_ref_state_set(ATK_OBJECT(node)) : nullptr;
+  // Keep semantic enabled/hidden/focus state authoritative for a live view.
+  // GTK supplies the empty and detached-widget states, including DEFUNCT.
+  if (node != nullptr &&
+      gtk_accessible_get_widget(GTK_ACCESSIBLE(accessible)) != nullptr) {
+    return atk_object_ref_state_set(ATK_OBJECT(node));
+  }
+  return ATK_OBJECT_CLASS(fl_view_accessible_parent_class)
+      ->ref_state_set(accessible);
 }
 
 static void fl_view_accessible_dispose(GObject* object) {
@@ -126,9 +140,21 @@ static void fl_view_accessible_dispose(GObject* object) {
 
   g_clear_pointer(&self->semantics_nodes_by_id, g_hash_table_unref);
 
-  g_weak_ref_clear(&self->engine);
+  g_weak_ref_set(&self->engine, nullptr);
 
   G_OBJECT_CLASS(fl_view_accessible_parent_class)->dispose(object);
+}
+
+static void fl_view_accessible_finalize(GObject* object) {
+  g_weak_ref_clear(&FL_VIEW_ACCESSIBLE(object)->engine);
+  G_OBJECT_CLASS(fl_view_accessible_parent_class)->finalize(object);
+}
+
+// GTK children are implementation details; only semantic nodes are exported.
+static gint fl_view_accessible_gtk_child_changed(GtkContainer*,
+                                                 GtkWidget*,
+                                                 gpointer) {
+  return 1;
 }
 
 static void fl_view_accessible_class_init(FlViewAccessibleClass* klass) {
@@ -138,20 +164,26 @@ static void fl_view_accessible_class_init(FlViewAccessibleClass* klass) {
   ATK_OBJECT_CLASS(klass)->ref_state_set = fl_view_accessible_ref_state_set;
 
   G_OBJECT_CLASS(klass)->dispose = fl_view_accessible_dispose;
+  G_OBJECT_CLASS(klass)->finalize = fl_view_accessible_finalize;
+  GTK_CONTAINER_ACCESSIBLE_CLASS(klass)->add_gtk =
+      fl_view_accessible_gtk_child_changed;
+  GTK_CONTAINER_ACCESSIBLE_CLASS(klass)->remove_gtk =
+      fl_view_accessible_gtk_child_changed;
 }
 
 static void fl_view_accessible_init(FlViewAccessible* self) {
+  g_weak_ref_init(&self->engine, nullptr);
   self->semantics_nodes_by_id = g_hash_table_new_full(
       g_direct_hash, g_direct_equal, nullptr, g_object_unref);
 }
 
-FlViewAccessible* fl_view_accessible_new(FlEngine* engine,
-                                         FlutterViewId view_id) {
-  FlViewAccessible* self =
-      FL_VIEW_ACCESSIBLE(g_object_new(fl_view_accessible_get_type(), nullptr));
-  g_weak_ref_init(&self->engine, engine);
+void fl_view_accessible_set_engine(FlViewAccessible* self,
+                                   FlEngine* engine,
+                                   FlutterViewId view_id) {
+  g_return_if_fail(FL_IS_VIEW_ACCESSIBLE(self));
+  g_return_if_fail(FL_IS_ENGINE(engine));
+  g_weak_ref_set(&self->engine, engine);
   self->view_id = view_id;
-  return self;
 }
 
 void fl_view_accessible_handle_update_semantics(
@@ -165,6 +197,9 @@ void fl_view_accessible_handle_update_semantics(
   for (size_t i = 0; i < update->node_count; i++) {
     FlutterSemanticsNode2* node = update->nodes[i];
     FlAccessibleNode* atk_node = get_node(self, node);
+    if (atk_node == nullptr) {
+      continue;
+    }
 
     fl_accessible_node_set_flags(atk_node, node->flags2);
     fl_accessible_node_set_actions(atk_node, node->actions);
