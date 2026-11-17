@@ -381,6 +381,11 @@ if (!enable_lto) {
   }
 }
 
+test_fixtures("flutter_linux_accessibility_fixtures") {
+  dart_main = "testing/fixtures/accessibility.dart"
+  fixtures = [ "//flutter/third_party/icu/common/icudtl.dat" ]
+}
+
 # Uses real GTK and an active AT-SPI bridge, without LinuxTest or GTK mocks.
 executable("flutter_linux_accessibility_unittests") {
   testonly = true
@@ -393,6 +398,7 @@ executable("flutter_linux_accessibility_unittests") {
   ]
   deps = [
     ":flutter_linux",
+    ":flutter_linux_accessibility_fixtures",
     "//flutter/testing",
   ]
 }

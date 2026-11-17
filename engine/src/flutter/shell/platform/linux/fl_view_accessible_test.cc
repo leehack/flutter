@@ -16,8 +16,9 @@ class FlViewAccessibleTest : public flutter::testing::LinuxTest {
     widget =
         GTK_WIDGET(g_object_ref_sink(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)));
     accessible = FL_VIEW_ACCESSIBLE(
-        g_object_new(fl_view_accessible_get_type(), nullptr));
+        g_object_new(fl_view_accessible_get_type(), "widget", widget, nullptr));
     atk_object_initialize(ATK_OBJECT(accessible), widget);
+    ASSERT_EQ(gtk_accessible_get_widget(GTK_ACCESSIBLE(accessible)), widget);
     fl_view_accessible_set_engine(accessible, engine, 456);
   }
 
@@ -179,8 +180,10 @@ TEST_F(FlViewAccessibleTest, AddRemoveChildren) {
 
 TEST_F(FlViewAccessibleTest, EmptyStateBeforeEngineAttachment) {
   g_autoptr(FlViewAccessible) empty =
-      FL_VIEW_ACCESSIBLE(g_object_new(fl_view_accessible_get_type(), nullptr));
+      FL_VIEW_ACCESSIBLE(g_object_new(fl_view_accessible_get_type(), "widget",
+                                     widget, nullptr));
   atk_object_initialize(ATK_OBJECT(empty), widget);
+  ASSERT_EQ(gtk_accessible_get_widget(GTK_ACCESSIBLE(empty)), widget);
   EXPECT_EQ(atk_object_get_n_accessible_children(ATK_OBJECT(empty)), 0);
   EXPECT_EQ(atk_object_ref_accessible_child(ATK_OBJECT(empty), 0), nullptr);
   g_autoptr(AtkStateSet) states = atk_object_ref_state_set(ATK_OBJECT(empty));
@@ -204,6 +207,7 @@ TEST_F(FlViewAccessibleTest, RootStateRemainsAuthoritative) {
   fl_view_accessible_handle_update_semantics(accessible, &update);
   g_autoptr(AtkStateSet) states =
       atk_object_ref_state_set(ATK_OBJECT(accessible));
+  EXPECT_FALSE(atk_state_set_contains_state(states, ATK_STATE_DEFUNCT));
   EXPECT_FALSE(atk_state_set_contains_state(states, ATK_STATE_ENABLED));
   EXPECT_FALSE(atk_state_set_contains_state(states, ATK_STATE_VISIBLE));
   EXPECT_TRUE(atk_state_set_contains_state(states, ATK_STATE_SENSITIVE));
